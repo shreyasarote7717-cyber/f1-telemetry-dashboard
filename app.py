@@ -213,21 +213,22 @@ def get_season_progression_and_podiums(yr):
 season_race_results, season_podiums = get_season_progression_and_podiums(selected_year)
 
 # 5. Session Loading
-@st.cache_data(show_spinner=f"Loading Telemetry: {selected_year} {selected_event_name}...")
-def load_session_data(yr, rnd, stype):
-    s = fastf1.get_session(yr, rnd, stype)
-    s.load(telemetry=True, laps=True, weather=False)
-    return s
+# Replace the session loading section in app.py with this:
 
 session = None
 available_drivers = []
 
 try:
-    session = load_session_data(selected_year, selected_round, st_code)
-    if hasattr(session, 'laps') and not session.laps.empty:
-        available_drivers = sorted(session.laps['Driver'].dropna().unique().tolist())
+    with st.spinner(f"Loading session data for {selected_year} {selected_event_name}..."):
+        session = fastf1.get_session(selected_year, selected_round, st_code)
+        session.load(telemetry=True, laps=True, weather=False)
+        
+        if hasattr(session, 'laps') and not session.laps.empty:
+            available_drivers = sorted(session.laps['Driver'].dropna().unique().tolist())
+        else:
+            st.info(f"No lap timing data is available yet for this session ({selected_year} {selected_event_name}).")
 except Exception as e:
-    st.sidebar.info(f"Session data notice: {e}")
+    st.info(f"Session data not available for {selected_year} {selected_event_name} ({st_code}): {e}")
 
 # Application Main Title
 st.markdown(f"<div class='f1-title'>FIA FORMULA 1 WORLD CHAMPIONSHIP - {selected_year} {selected_event_name.upper()}</div>", unsafe_allow_html=True)
