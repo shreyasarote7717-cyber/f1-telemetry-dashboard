@@ -286,47 +286,56 @@ with tab_points_prog:
 with tab_telemetry:
     if available_drivers and session is not None:
         c1, c2 = st.columns(2)
-        with c1: d1 = st.selectbox("DRIVER 1", available_drivers, index=0)
-        with c2: d2 = st.selectbox("DRIVER 2", available_drivers, index=min(1, len(available_drivers)-1))
+        with c1: 
+            d1 = st.selectbox("DRIVER 1", available_drivers, index=0)
+        with c2: 
+            d2 = st.selectbox("DRIVER 2 (COMPARISON)", available_drivers, index=min(1, len(available_drivers) - 1))
 
         try:
-            lap1 = session.laps.pick_driver(d1).pick_fastest()
-            lap2 = session.laps.pick_driver(d2).pick_fastest()
-            
-            def process_tel(lap):
-                tel = lap.get_telemetry().add_distance()
-                speed_ms = tel['Speed'] / 3.6
-                time_s = tel['Time'].dt.total_seconds()
-                tel['Longitudinal_G'] = np.gradient(speed_ms, time_s) / 9.81
-                return tel
+            drv1_laps = session.laps.pick_driver(d1).dropna(subset=['LapTime'])
+            drv2_laps = session.laps.pick_driver(d2).dropna(subset=['LapTime'])
 
-            tel1 = process_tel(lap1)
-            tel2 = process_tel(lap2)
+            if drv1_laps.empty or drv2_laps.empty:
+                st.warning(f"One of the selected drivers ({d1} or {d2}) has no recorded telemetry in this session.")
+            else:
+                lap1 = drv1_laps.pick_fastest()
+                lap2 = drv2_laps.pick_fastest()
 
-            fig_tel = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, subplot_titles=("SPEED (KM/H)", "LONGITUDINAL ACCEL (G)", "THROTTLE (%)", "BRAKE"))
-            fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Speed'], name=f"{d1} Speed", line=dict(color='#E10600', width=1.8)), row=1, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Speed'], name=f"{d2} Speed", line=dict(color='#00D2BE', width=1.8)), row=1, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Longitudinal_G'], name=f"{d1} G", line=dict(color='#E10600', width=1.8)), row=2, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Longitudinal_G'], name=f"{d2} G", line=dict(color='#00D2BE', width=1.8)), row=2, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Throttle'], name=f"{d1} Throttle", line=dict(color='#E10600', width=1.8)), row=3, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Throttle'], name=f"{d2} Throttle", line=dict(color='#00D2BE', width=1.8)), row=3, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Brake'].astype(int), name=f"{d1} Brake", line=dict(color='#E10600', width=1.8)), row=4, col=1)
-            fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Brake'].astype(int), name=f"{d2} Brake", line=dict(color='#00D2BE', width=1.8)), row=4, col=1)
-            fig_tel.update_layout(height=720, template="plotly_dark", hovermode="x unified", font=dict(family="Titillium Web"), margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_tel, use_container_width=True)
+                tel1 = lap1.get_telemetry().add_distance()
+                tel2 = lap2.get_telemetry().add_distance()
 
-            fig_track = go.Figure(data=go.Scatter(
-                x=tel1['X'], y=tel1['Y'], mode='markers',
-                marker=dict(size=3.5, color=tel1['Longitudinal_G'], colorscale='RdBu', cmin=-4, cmax=2, colorbar=dict(title="G")),
-                hovertext=tel1['Speed'].apply(lambda s: f"{s:.1f} KM/H")
-            ))
-            fig_track.update_layout(template="plotly_dark", xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x", scaleratio=1), height=480)
-            st.plotly_chart(fig_track, use_container_width=True)
+                # Calculate dv/dt in G
+                tel1['Longitudinal_G'] = np.gradient(tel1['Speed'] / 3.6, tel1['Time'].dt.total_seconds()) / 9.81
+                tel2['Longitudinal_G'] = np.gradient(tel2['Speed'] / 3.6, tel2['Time'].dt.total_seconds()) / 9.81
+
+                fig_tel = make_subplots(
+                    rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                    subplot_titles=("SPEED (KM/H)", "LONGITUDINAL ACCELERATION (G-FORCE)", "THROTTLE (%)", "BRAKE INPUT")
+                )
+                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Speed'], name=f"{d1} Speed", line=dict(color='#E10600', width=1.8)), row=1, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Speed'], name=f"{d2} Speed", line=dict(color='#00D2BE', width=1.8)), row=1, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Longitudinal_G'], name=f"{d1} G", line=dict(color='#E10600', width=1.8)), row=2, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Longitudinal_G'], name=f"{d2} G", line=dict(color='#00D2BE', width=1.8)), row=2, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Throttle'], name=f"{d1} Throttle", line=dict(color='#E10600', width=1.8)), row=3, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Throttle'], name=f"{d2} Throttle", line=dict(color='#00D2BE', width=1.8)), row=3, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Brake'].astype(int), name=f"{d1} Brake", line=dict(color='#E10600', width=1.8)), row=4, col=1)
+                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Brake'].astype(int), name=f"{d2} Brake", line=dict(color='#00D2BE', width=1.8)), row=4, col=1)
+                fig_tel.update_layout(height=720, template="plotly_dark", hovermode="x unified", font=dict(family="Titillium Web"), margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig_tel, use_container_width=True)
+
+                fig_track = go.Figure(data=go.Scatter(
+                    x=tel1['X'], y=tel1['Y'], mode='markers',
+                    marker=dict(size=3.5, color=tel1['Longitudinal_G'], colorscale='RdBu', cmin=-4, cmax=2, colorbar=dict(title="G")),
+                    hovertext=tel1['Speed'].apply(lambda s: f"{s:.1f} KM/H")
+                ))
+                fig_track.update_layout(template="plotly_dark", xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x", scaleratio=1), height=480)
+                st.plotly_chart(fig_track, use_container_width=True)
         except Exception as e:
-            st.warning(f"Telemetry channels unavailable for this driver pairing: {e}")
+            st.error(f"Telemetry extraction error: {e}")
     else:
-        st.warning(f"No car telemetry available for {selected_year} {selected_event_name} ({st_code}). If this is a future or unrun round, select a completed Grand Prix from 2024 or earlier.")
+        st.warning(f"No telemetry available for {selected_year} {selected_event_name}. If this race has not concluded yet, official telemetry is published within 30 minutes after session finish.")
 
+        
 # TAB 4: 3D ELEVATION
 with tab_elevation:
     if available_drivers and session is not None:
