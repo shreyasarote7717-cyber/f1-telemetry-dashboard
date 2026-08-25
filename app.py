@@ -11,21 +11,20 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-# 1. Cloud-Safe Cache Directory Setup
-CACHE_DIR = os.path.join(tempfile.gettempdir(), 'fastf1_cache')
-if not os.path.exists(CACHE_DIR):
-    os.makedirs(CACHE_DIR, exist_ok=True)
+# 1. Cloud-Safe Cache Directory
+CACHE_DIR = os.path.join(tempfile.gettempdir(), 'f1_fastf1_cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
 fastf1.Cache.enable_cache(CACHE_DIR)
 
 st.set_page_config(page_title="FORMULA 1 TELEMETRY & PERFORMANCE HUB", layout="wide")
 
-# 2. Formula 1 Typography & Styling
+# 2. Formula 1 Broadcast Typography & Custom CSS
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Titillium+Web:ital,wght@0,300;0,400;0,600;0,700;0,900;1,700&display=swap');
     * { font-family: 'Titillium Web', -apple-system, BlinkMacSystemFont, sans-serif !important; }
     .f1-title {
-        font-size: 2.2rem; font-weight: 900; font-style: italic;
+        font-size: 2.1rem; font-weight: 900; font-style: italic;
         text-transform: uppercase; letter-spacing: 1.5px; color: #FFFFFF;
         border-bottom: 3px solid #E10600; padding-bottom: 8px; margin-bottom: 20px;
     }
@@ -55,6 +54,7 @@ COMPOUND_COLORS = {
     'INTERMEDIATE': '#39B54A', 'WET': '#00AEEF', 'UNKNOWN': '#888888'
 }
 
+# Modal Popup for Driver Biography & Year Statistics
 @st.dialog("DRIVER PROFILE & SEASON METRICS", width="medium")
 def show_driver_popup(driver_info, season_year, podium_count):
     dob_str = driver_info.get('dateOfBirth', '')
@@ -81,18 +81,18 @@ def show_driver_popup(driver_info, season_year, podium_count):
 
     st.markdown("---")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("POSITION", f"P{driver_info.get('position', '-')}")
-    m2.metric("POINTS", f"{driver_info.get('points', 0)} PTS")
+    m1.metric("CHAMPIONSHIP POS", f"P{driver_info.get('position', '-')}")
+    m2.metric("TOTAL POINTS", f"{driver_info.get('points', 0)} PTS")
     m3.metric("VICTORIES", f"{driver_info.get('wins', 0)}")
     m4.metric("PODIUMS", f"{podium_count}")
 
-# 3. Sidebar Setup (Defaults to a completed season with telemetry)
+# 3. Sidebar Selection
 st.sidebar.markdown("<h3 style='font-weight:900; font-style:italic;'>SESSION CONTROL</h3>", unsafe_allow_html=True)
 year_list = list(range(2026, 2017, -1))
-# Default to 2024 (index 2) to ensure telemetry exists immediately on cloud load
+# Defaults to 2024 (index 2) so telemetry is fully populated on startup
 selected_year = st.sidebar.selectbox("SEASON", year_list, index=2)
 
-@st.cache_data(show_spinner="Loading Season Calendar...")
+@st.cache_data(show_spinner=False)
 def get_season_schedule(yr):
     try:
         schedule = fastf1.get_event_schedule(yr, include_testing=False)
@@ -104,18 +104,18 @@ schedule_df = get_season_schedule(selected_year)
 race_options = dict(zip(schedule_df['EventName'], schedule_df['RoundNumber']))
 
 if not race_options:
-    st.sidebar.warning(f"No schedule found for {selected_year}.")
+    st.sidebar.warning(f"No event schedule found for {selected_year}.")
     st.stop()
 
-# Default to a completed race (e.g., Round 12 or first round)
-default_idx = min(11, len(race_options) - 1)
-selected_event_name = st.sidebar.selectbox("GRAND PRIX", list(race_options.keys()), index=default_idx)
+# Default to Silverstone / completed round
+default_round_idx = min(11, len(race_options) - 1)
+selected_event_name = st.sidebar.selectbox("GRAND PRIX", list(race_options.keys()), index=default_round_idx)
 selected_round = race_options[selected_event_name]
 session_choice = st.sidebar.selectbox("SESSION", ["Race (R)", "Qualifying (Q)", "Sprint (S)", "FP1", "FP2", "FP3"], index=0)
 st_code = session_choice.split("(")[-1].replace(")", "").strip()
 
-# 4. Season Standings & Podiums
-@st.cache_data(show_spinner=f"Analyzing {selected_year} Season Results...")
+# 4. Accurate Podiums & Points Calculation
+@st.cache_data(show_spinner=False)
 def get_season_progression_and_podiums(yr):
     erg = Ergast()
     try:
@@ -152,18 +152,32 @@ def get_season_progression_and_podiums(yr):
 
 season_race_results, season_podiums = get_season_progression_and_podiums(selected_year)
 
-# 5. Session Loading (Safe for Streamlit Cloud)
+# 5. Session Loading with Resource Caching (Prevents Cloud Memory Crashes)
+@st.cache_resource(show_spinner=False)
+def get_loaded_f1_session(season_yr, event_str, session_type_code):
+    try:
+        sess = fastf1.get_session(int(season_yr), str(event_str), str(session_type_code))
+        sess.load(telemetry=True, laps=True, weather=False)
+        return sess
+    except Exception:
+        return None
+
 session = None
 available_drivers = []
 
 with st.spinner(f"Loading Telemetry for {selected_year} {selected_event_name} ({st_code})..."):
-    try:
-        session = fastf1.get_session(selected_year, selected_round, st_code)
-        session.load(telemetry=True, laps=True, weather=False)
-        if hasattr(session, 'laps') and not session.laps.empty:
-            available_drivers = sorted(session.laps['Driver'].dropna().unique().tolist())
-    except Exception as e:
-        session = None
+    session = get_loaded_f1_session(selected_year, selected_event_name, st_code)
+    if session is not None and hasattr(session, 'laps') and not session.laps.empty:
+        valid_laps_df = session.laps.dropna(subset=['LapTime', 'LapNumber'])
+        if not valid_laps_df.empty:
+            for d_code in sorted(valid_laps_df['Driver'].unique().tolist()):
+                try:
+                    drv_fastest = valid_laps_df.pick_driver(d_code).pick_fastest()
+                    if drv_fastest is not None:
+                        _ = drv_fastest.get_telemetry()
+                        available_drivers.append(d_code)
+                except Exception:
+                    continue
 
 st.markdown(f"<div class='f1-title'>FIA FORMULA 1 WORLD CHAMPIONSHIP - {selected_year} {selected_event_name.upper()}</div>", unsafe_allow_html=True)
 
@@ -177,7 +191,9 @@ tab_standings, tab_points_prog, tab_telemetry, tab_elevation, tab_speedtrap, tab
     "RACE PACE ANALYSIS"
 ])
 
-# TAB 1: STANDINGS
+# =========================================================
+# TAB 1: STANDINGS & PROFILES
+# =========================================================
 with tab_standings:
     col_d, col_c = st.columns([3, 2])
     ergast = Ergast()
@@ -188,7 +204,7 @@ with tab_standings:
             d_standings = d_resp.content[0]
             headshots = {}
             try:
-                openf1_resp = requests.get("https://api.openf1.org/v1/drivers?meeting_key=latest", timeout=3).json()
+                openf1_resp = requests.get("https://api.openf1.org/v1/drivers?meeting_key=latest", timeout=2).json()
                 for d in openf1_resp:
                     headshots[d.get('name_acronym', '')] = d.get('headshot_url')
             except Exception:
@@ -229,7 +245,7 @@ with tab_standings:
                         d_dict['headshot_url'] = img_url
                         show_driver_popup(d_dict, selected_year, podiums)
         except Exception as e:
-            st.info(f"Driver standings unavailable for {selected_year}: {e}")
+            st.info(f"Driver standings currently unavailable for {selected_year}: {e}")
 
     with col_c:
         st.markdown("<h4 style='font-weight:900; font-style:italic;'>CONSTRUCTORS CHAMPIONSHIP</h4>", unsafe_allow_html=True)
@@ -259,15 +275,17 @@ with tab_standings:
             fig_teams.update_layout(height=360, showlegend=False, font=dict(family="Titillium Web"))
             st.plotly_chart(fig_teams, use_container_width=True)
         except Exception as e:
-            st.info(f"Constructor standings unavailable: {e}")
+            st.info(f"Constructor standings currently unavailable: {e}")
 
-# TAB 2: POINTS PROGRESSION
+# =========================================================
+# TAB 2: POINTS PROGRESSION & RACE ACQUISITION
+# =========================================================
 with tab_points_prog:
     if not season_race_results.empty:
         all_res_drivers = sorted(season_race_results['driverCode'].dropna().unique().tolist())
         flt_col1, flt_col2 = st.columns([1, 2])
         with flt_col1:
-            view_mode = st.radio("VIEW MODE", ["CUMULATIVE CHAMPIONSHIP POINTS", "POINTS SCORED PER RACE"])
+            view_mode = st.radio("SELECT POINTS MODE", ["CUMULATIVE CHAMPIONSHIP POINTS", "POINTS SCORED PER RACE"])
         with flt_col2:
             selected_prog_drivers = st.multiselect("FILTER DRIVERS", all_res_drivers, default=all_res_drivers[:6])
 
@@ -275,71 +293,98 @@ with tab_points_prog:
             filt_df = season_race_results[season_race_results['driverCode'].isin(selected_prog_drivers)].copy()
             pivot_pts = filt_df.pivot_table(index='RaceName', columns='driverCode', values='points', aggfunc='sum', sort=False).fillna(0)
             plot_data = pivot_pts.cumsum().reset_index() if view_mode == "CUMULATIVE CHAMPIONSHIP POINTS" else pivot_pts.reset_index()
-            fig_pts = px.line(plot_data, x='RaceName', y=selected_prog_drivers, markers=True, template="plotly_dark")
+            y_axis_label = "TOTAL CHAMPIONSHIP POINTS" if view_mode == "CUMULATIVE CHAMPIONSHIP POINTS" else "ROUND POINTS SCORED"
+            fig_pts = px.line(
+                plot_data, x='RaceName', y=selected_prog_drivers, markers=True, template="plotly_dark",
+                labels={'value': y_axis_label, 'RaceName': 'GRAND PRIX ROUND', 'variable': 'DRIVER'}
+            )
             fig_pts.update_layout(height=520, hovermode="x unified", font=dict(family="Titillium Web"), xaxis=dict(tickangle=-45))
             st.plotly_chart(fig_pts, use_container_width=True)
+            st.markdown("<h5 style='font-weight:800; text-transform:uppercase;'>ROUND-BY-ROUND POINTS MATRIX</h5>", unsafe_allow_html=True)
             st.dataframe(pivot_pts.T, use_container_width=True)
     else:
         st.info(f"No completed race progression data found for {selected_year}.")
 
-# TAB 3: TELEMETRY
+# =========================================================
+# TAB 3: LAP TELEMETRY & ACCELERATION
+# =========================================================
 with tab_telemetry:
     if available_drivers and session is not None:
-        c1, c2 = st.columns(2)
-        with c1: 
-            d1 = st.selectbox("DRIVER 1", available_drivers, index=0)
-        with c2: 
-            d2 = st.selectbox("DRIVER 2 (COMPARISON)", available_drivers, index=min(1, len(available_drivers) - 1))
+        st.markdown("<h4 style='font-weight:900; text-transform:uppercase;'>HEAD-TO-HEAD LAP TELEMETRY TRACE</h4>", unsafe_allow_html=True)
+        
+        d1_idx = available_drivers.index('HAM') if 'HAM' in available_drivers else 0
+        d2_idx = available_drivers.index('VER') if 'VER' in available_drivers else (1 if len(available_drivers) > 1 else 0)
+        
+        col_drv1, col_drv2 = st.columns(2)
+        with col_drv1:
+            driver1 = st.selectbox("DRIVER 1 (BASE)", available_drivers, index=d1_idx, key="sel_drv1")
+        with col_drv2:
+            driver2 = st.selectbox("DRIVER 2 (COMPARISON)", available_drivers, index=d2_idx, key="sel_drv2")
 
         try:
-            drv1_laps = session.laps.pick_driver(d1).dropna(subset=['LapTime'])
-            drv2_laps = session.laps.pick_driver(d2).dropna(subset=['LapTime'])
+            lap1 = session.laps.pick_driver(driver1).pick_fastest()
+            lap2 = session.laps.pick_driver(driver2).pick_fastest()
 
-            if drv1_laps.empty or drv2_laps.empty:
-                st.warning(f"One of the selected drivers ({d1} or {d2}) has no recorded telemetry in this session.")
+            if lap1 is None or lap2 is None:
+                st.warning("Selected driver does not have a completed flying lap.")
             else:
-                lap1 = drv1_laps.pick_fastest()
-                lap2 = drv2_laps.pick_fastest()
+                t1 = lap1.get_telemetry().add_distance()
+                t2 = lap2.get_telemetry().add_distance()
 
-                tel1 = lap1.get_telemetry().add_distance()
-                tel2 = lap2.get_telemetry().add_distance()
-
-                # Calculate dv/dt in G
-                tel1['Longitudinal_G'] = np.gradient(tel1['Speed'] / 3.6, tel1['Time'].dt.total_seconds()) / 9.81
-                tel2['Longitudinal_G'] = np.gradient(tel2['Speed'] / 3.6, tel2['Time'].dt.total_seconds()) / 9.81
+                t1['Time_Sec'] = t1['Time'].dt.total_seconds()
+                t2['Time_Sec'] = t2['Time'].dt.total_seconds()
+                
+                t1['Longitudinal_G'] = np.gradient(t1['Speed'] / 3.6, t1['Time_Sec']) / 9.81
+                t2['Longitudinal_G'] = np.gradient(t2['Speed'] / 3.6, t2['Time_Sec']) / 9.81
 
                 fig_tel = make_subplots(
                     rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-                    subplot_titles=("SPEED (KM/H)", "LONGITUDINAL ACCELERATION (G-FORCE)", "THROTTLE (%)", "BRAKE INPUT")
+                    subplot_titles=("SPEED (KM/H)", "LONGITUDINAL ACCEL (G-FORCE)", "THROTTLE INPUT (%)", "BRAKE INPUT")
                 )
-                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Speed'], name=f"{d1} Speed", line=dict(color='#E10600', width=1.8)), row=1, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Speed'], name=f"{d2} Speed", line=dict(color='#00D2BE', width=1.8)), row=1, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Longitudinal_G'], name=f"{d1} G", line=dict(color='#E10600', width=1.8)), row=2, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Longitudinal_G'], name=f"{d2} G", line=dict(color='#00D2BE', width=1.8)), row=2, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Throttle'], name=f"{d1} Throttle", line=dict(color='#E10600', width=1.8)), row=3, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Throttle'], name=f"{d2} Throttle", line=dict(color='#00D2BE', width=1.8)), row=3, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Brake'].astype(int), name=f"{d1} Brake", line=dict(color='#E10600', width=1.8)), row=4, col=1)
-                fig_tel.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Brake'].astype(int), name=f"{d2} Brake", line=dict(color='#00D2BE', width=1.8)), row=4, col=1)
-                fig_tel.update_layout(height=720, template="plotly_dark", hovermode="x unified", font=dict(family="Titillium Web"), margin=dict(l=10, r=10, t=30, b=10))
+
+                fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Speed'], name=f"{driver1} Speed", line=dict(color='#E10600', width=1.8)), row=1, col=1)
+                fig_tel.add_trace(go.Scatter(x=t2['Distance'], y=t2['Speed'], name=f"{driver2} Speed", line=dict(color='#00D2BE', width=1.8)), row=1, col=1)
+
+                fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Longitudinal_G'], name=f"{driver1} G", line=dict(color='#E10600', width=1.8)), row=2, col=1)
+                fig_tel.add_trace(go.Scatter(x=t2['Distance'], y=t2['Longitudinal_G'], name=f"{driver2} G", line=dict(color='#00D2BE', width=1.8)), row=2, col=1)
+
+                fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Throttle'], name=f"{driver1} Throttle", line=dict(color='#E10600', width=1.8)), row=3, col=1)
+                fig_tel.add_trace(go.Scatter(x=t2['Distance'], y=t2['Throttle'], name=f"{driver2} Throttle", line=dict(color='#00D2BE', width=1.8)), row=3, col=1)
+
+                fig_tel.add_trace(go.Scatter(x=t1['Distance'], y=t1['Brake'].astype(int), name=f"{driver1} Brake", line=dict(color='#E10600', width=1.8)), row=4, col=1)
+                fig_tel.add_trace(go.Scatter(x=t2['Distance'], y=t2['Brake'].astype(int), name=f"{driver2} Brake", line=dict(color='#00D2BE', width=1.8)), row=4, col=1)
+
+                fig_tel.update_layout(
+                    height=700, template="plotly_dark", hovermode="x unified",
+                    font=dict(family="Titillium Web"), margin=dict(l=10, r=10, t=30, b=10)
+                )
                 st.plotly_chart(fig_tel, use_container_width=True)
 
-                fig_track = go.Figure(data=go.Scatter(
-                    x=tel1['X'], y=tel1['Y'], mode='markers',
-                    marker=dict(size=3.5, color=tel1['Longitudinal_G'], colorscale='RdBu', cmin=-4, cmax=2, colorbar=dict(title="G")),
-                    hovertext=tel1['Speed'].apply(lambda s: f"{s:.1f} KM/H")
+                st.markdown(f"<h4 style='font-weight:900; text-transform:uppercase;'>CIRCUIT ACCELERATION & BRAKING PROFILE ({driver1})</h4>", unsafe_allow_html=True)
+                fig_map = go.Figure(data=go.Scatter(
+                    x=t1['X'], y=t1['Y'], mode='markers',
+                    marker=dict(size=3, color=t1['Longitudinal_G'], colorscale='RdBu', cmin=-4, cmax=2, colorbar=dict(title="G")),
+                    hovertext=t1['Speed'].apply(lambda s: f"{s:.1f} KM/H")
                 ))
-                fig_track.update_layout(template="plotly_dark", xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x", scaleratio=1), height=480)
-                st.plotly_chart(fig_track, use_container_width=True)
+                fig_map.update_layout(
+                    template="plotly_dark", 
+                    xaxis=dict(visible=False), 
+                    yaxis=dict(visible=False, scaleanchor="x", scaleratio=1), 
+                    height=450
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
+
         except Exception as e:
             st.error(f"Telemetry extraction error: {e}")
     else:
-        st.warning(f"No telemetry available for {selected_year} {selected_event_name}. If this race has not concluded yet, official telemetry is published within 30 minutes after session finish.")
+        st.warning(f"No car telemetry stream available for {selected_year} {selected_event_name}. For full telemetry data, select a completed race round (such as 2024 British GP / Silverstone).")
 
-        
-# TAB 4: 3D ELEVATION
+# =========================================================
+# TAB 4: 3D TRACK TOPOGRAPHY
+# =========================================================
 with tab_elevation:
     if available_drivers and session is not None:
-        elev_driver = st.selectbox("DRIVER PATH", available_drivers, index=0, key="elev_driver")
+        elev_driver = st.selectbox("SELECT DRIVER PATH", available_drivers, index=0, key="elev_driver")
         try:
             ref_lap = session.laps.pick_driver(elev_driver).pick_fastest()
             if ref_lap is not None:
@@ -352,17 +397,19 @@ with tab_elevation:
 
                 fig_3d = go.Figure(data=[go.Scatter3d(
                     x=x_m, y=y_m, z=z_m, mode='lines',
-                    line=dict(color=tel_3d['Speed'], colorscale='Turbo', width=6, colorbar=dict(title="SPEED")),
+                    line=dict(color=tel_3d['Speed'], colorscale='Turbo', width=6, colorbar=dict(title="SPEED (KM/H)")),
                     hovertext=tel_3d.apply(lambda r: f"Speed: {r['Speed']:.1f} km/h | Elev: {r['Z']/10:.1f}m", axis=1)
                 )])
-                fig_3d.update_layout(template="plotly_dark", scene=dict(xaxis=dict(title="X"), yaxis=dict(title="Y"), zaxis=dict(title="Z"), aspectmode='data'), font=dict(family="Titillium Web"), height=600)
+                fig_3d.update_layout(template="plotly_dark", scene=dict(xaxis=dict(title="X"), yaxis=dict(title="Y"), zaxis=dict(title="ELEVATION"), aspectmode='data'), font=dict(family="Titillium Web"), height=600)
                 st.plotly_chart(fig_3d, use_container_width=True)
         except Exception as e:
             st.warning(f"Could not construct 3D coordinates: {e}")
     else:
         st.warning("No session data available for 3D Topography.")
 
-# TAB 5: SPEED TRAP
+# =========================================================
+# TAB 5: SPEED TRAP RANKINGS
+# =========================================================
 with tab_speedtrap:
     if available_drivers and session is not None:
         speed_records = []
@@ -394,7 +441,9 @@ with tab_speedtrap:
     else:
         st.warning("No session data available for Speed Trap rankings.")
 
-# TAB 6: TYRE STRATEGY
+# =========================================================
+# TAB 6: TYRE STRATEGY GANTT
+# =========================================================
 with tab_strategy:
     if available_drivers and session is not None:
         try:
@@ -420,7 +469,9 @@ with tab_strategy:
     else:
         st.warning("No session data available for Tyre Strategy.")
 
-# TAB 7: RACE PACE
+# =========================================================
+# TAB 7: RACE PACE ANALYSIS
+# =========================================================
 with tab_pace:
     if available_drivers and session is not None:
         try:
@@ -436,3 +487,4 @@ with tab_pace:
             st.warning(f"Could not compute pace distribution: {e}")
     else:
         st.warning("No session data available for Race Pace analysis.")
+        
